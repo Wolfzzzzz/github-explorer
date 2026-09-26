@@ -1,3 +1,7 @@
 _site/
 __pycache__/
 .DS_Store
+part_*.json
+parts_archive/
+*.log
+done.txt

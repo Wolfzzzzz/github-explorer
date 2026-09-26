@@ -12,6 +12,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 repos = json.load(open(os.path.join(ROOT, "data", "repos.json"), encoding="utf-8"))
+# 体积优化：描述截断到 120 字 + 剔除多余字段（10 万级数据可显著减小页面体积）
+for r in repos:
+    d = r.get("description") or ""
+    if len(d) > 120:
+        r["description"] = d[:117] + "..."
+    mq = r.get("matchedQuery") or ""
+    if len(mq) > 24:
+        r["matchedQuery"] = mq[:24]
 template = open(os.path.join(ROOT, "assets", "template.html"), encoding="utf-8").read()
 
 hp = os.path.join(ROOT, "assets", "highlights.json")
@@ -62,12 +70,38 @@ insights = [{
         "数据来自公开的 GitHub Search API，Star 数为每次构建时的快照。",
     ],
     "bullets": [
-        "卡片支持：收藏（本地保存）/ 对比 / 存为图片 / 相似推荐",
+        "卡片支持：收藏（本地保存）/ 对比 / 存为图片 / 相似推荐 / 上一个下一个导航",
         "导出按钮可把当前筛选结果存为 Markdown / JSON / 纯文本",
+        "支持随机排序（🎲）发现没见过的项目，支持 URL 分享当前筛选状态",
     ],
     "action": "收藏本页，每天来看新星榜和活跃榜的变化。",
     "prio": "🟢 提示", "prioClass": "p3",
 }]
+
+# 为每个方向自动生成数据洞察（方向越多，洞察越丰富）
+for d in dir_order:
+    rs = [r for r in repos if r.get("direction") == d]
+    if len(rs) < 15:
+        continue
+    total_star = sum(r.get("stars", 0) for r in rs)
+    avg = total_star // len(rs)
+    top5 = sorted(rs, key=lambda x: -x.get("stars", 0))[:5]
+    lcnt = {}
+    for r in rs:
+        lcnt[r.get("language", "—")] = lcnt.get(r.get("language", "—"), 0) + 1
+    top_langs = sorted(lcnt.items(), key=lambda x: -x[1])[:4]
+    t0 = top5[0]
+    insights.append({
+        "title": d, "count": f"{len(rs)} 个仓库", "dir": d,
+        "paras": [
+            f"本方向收录 <b>{len(rs)}</b> 个仓库，Star 合计 <b>{total_star:,}</b>，平均 <b>{avg:,}</b> ★。",
+            f"代表项目：<b>{t0['owner']}/{t0['name']}</b>（{t0.get('stars',0):,}★）——{(t0.get('description') or '').strip()[:70]}",
+            "主流语言：" + "、".join(f"{l}（{n}）" for l, n in top_langs),
+        ],
+        "bullets": [f"<b>{r['owner']}/{r['name']}</b> — {r.get('stars',0):,}★ {(r.get('description') or '').strip()[:48]}" for r in top5],
+        "action": "点击上方「方向」里的同名标签，即可单独浏览该方向全部仓库。",
+        "prio": "🟢 自动", "prioClass": "p3",
+    })
 
 data = {
     "generatedAt": now.strftime("%Y-%m-%d %H:%M") + " UTC",
