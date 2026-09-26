@@ -81,7 +81,7 @@ data = {
 
 # 关键：数据里可能含 </script>（XSS payload 类描述），必须转义否则页面白屏
 payload = (json.dumps(data, ensure_ascii=False)
-           .replace("</", "<\\/")
+           .replace("<", "\\u003c")
            .replace("\u2028", "\\u2028")
            .replace("\u2029", "\\u2029"))
 html = template.replace("/*__DATA__*/ {}", payload)
