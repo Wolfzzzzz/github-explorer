@@ -5,6 +5,7 @@
 只用标准库，无第三方依赖。Token 从环境变量 GH_TOKEN 读取（Actions 自带）。
 """
 import json
+import datetime
 import os
 import time
 import urllib.parse
@@ -72,15 +73,53 @@ def api(q, limit=30):
         return json.load(r)
 
 
+# 每日轮换探索查询：按星期几选一组，保证每天都有不同方向的新仓库进场
+EXPLORE_POOLS = {
+    0: [("摄影 / 图库 / 社区", "image gallery"), ("航图 / 航空 / 飞行", "airport map"),
+        ("化学 / 科学工具", "molecule viewer"), ("macOS / 硬件监控 / 菜单栏", "macos utility"),
+        ("AI Agent / MCP / LLM", "agent framework"), ("Web 安全 / CTF / 渗透", "recon tool"),
+        ("自托管 / 家庭实验室", "docker compose")],
+    1: [("摄影 / 图库 / 社区", "photo backup"), ("航图 / 航空 / 飞行", "flight tracker"),
+        ("化学 / 科学工具", "lab simulation"), ("macOS / 硬件监控 / 菜单栏", "menubar app"),
+        ("AI Agent / MCP / LLM", "rag"), ("Web 安全 / CTF / 渗透", "pentest lab"),
+        ("自托管 / 家庭实验室", "nas")],
+    2: [("摄影 / 图库 / 社区", "lightbox"), ("航图 / 航空 / 飞行", "adsb"),
+        ("化学 / 科学工具", "periodic table"), ("macOS / 硬件监控 / 菜单栏", "battery monitor"),
+        ("AI Agent / MCP / LLM", "prompt engineering"), ("Web 安全 / CTF / 渗透", "xss"),
+        ("自托管 / 家庭实验室", "reverse proxy")],
+    3: [("摄影 / 图库 / 社区", "photo map"), ("航图 / 航空 / 飞行", "vatsim"),
+        ("化学 / 科学工具", "rdkit"), ("macOS / 硬件监控 / 菜单栏", "temperature monitor"),
+        ("AI Agent / MCP / LLM", "local llm"), ("Web 安全 / CTF / 渗透", "ctf writeups"),
+        ("自托管 / 家庭实验室", "uptime monitor")],
+    4: [("摄影 / 图库 / 社区", "masonry grid"), ("航图 / 航空 / 飞行", "opensky"),
+        ("化学 / 科学工具", "chemistry quiz"), ("macOS / 硬件监控 / 菜单栏", "fan control"),
+        ("AI Agent / MCP / LLM", "dify"), ("Web 安全 / CTF / 渗透", "osint"),
+        ("自托管 / 家庭实验室", "file sync")],
+    5: [("摄影 / 图库 / 社区", "geotag"), ("航图 / 航空 / 飞行", "flight simulator"),
+        ("化学 / 科学工具", "element data"), ("macOS / 硬件监控 / 菜单栏", "smc"),
+        ("AI Agent / MCP / LLM", "crewai"), ("Web 安全 / CTF / 渗透", "burp"),
+        ("自托管 / 家庭实验室", "home assistant")],
+    6: [("摄影 / 图库 / 社区", "photo slideshow"), ("航图 / 航空 / 飞行", "metar api"),
+        ("化学 / 科学工具", "chemical database"), ("macOS / 硬件监控 / 菜单栏", "network monitor"),
+        ("AI Agent / MCP / LLM", "n8n"), ("Web 安全 / CTF / 渗透", "nuclei"),
+        ("自托管 / 家庭实验室", "server dashboard")],
+}
+
+
 def main():
     if os.path.exists(DATA):
         repos = json.load(open(DATA, encoding="utf-8"))
     else:
         repos = []
     by_url = {r["url"]: r for r in repos}
+
+    weekday = datetime.datetime.now(datetime.timezone.utc).weekday()
+    daily = QUERIES + EXPLORE_POOLS.get(weekday, [])
+    print(f"weekday={weekday} daily_queries={len(daily)}", flush=True)
+
     updated = created = failed = 0
 
-    for i, (direction, q) in enumerate(QUERIES, 1):
+    for i, (direction, q) in enumerate(daily, 1):
         print(f"[{i}/{len(QUERIES)}] {direction} :: {q}", flush=True)
         try:
             data = api(q)

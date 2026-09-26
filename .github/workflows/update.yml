@@ -2,7 +2,7 @@ name: Update data & deploy
 
 on:
   schedule:
-    - cron: "0 2 * * *" # UTC 02:00 = 北京时间每天 10:00
+    - cron: "0 */6 * * *" # 每 6 小时一次 = 北京 02/08/14/20 点
   workflow_dispatch: {}
 
 permissions:
