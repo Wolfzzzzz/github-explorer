@@ -139,6 +139,7 @@ light_js = ("window.__LIGHT__={dirs:" + json.dumps(dir_order, ensure_ascii=False
             + ",langs:" + json.dumps(all_langs, ensure_ascii=False)
             + ",repos:" + json.dumps(light, ensure_ascii=False).replace("<", "\\u003c")
             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "};")
+os.makedirs(os.path.join(ROOT, "_site", "data"), exist_ok=True)
 with open(os.path.join(ROOT, "_site", "data", "meta.js"), "w", encoding="utf-8") as f:
     f.write(light_js)
 
