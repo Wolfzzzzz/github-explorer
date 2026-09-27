@@ -244,6 +244,7 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
 </head>
 <body>
 
+<!--DATA_SCRIPTS-->
 <div id="boot">
   <div class="logo"><i></i>GitHub 资源探索台</div>
   <div class="bar"><i id="bootBar"></i></div>
@@ -349,10 +350,10 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
 <div class="toast" id="toast"></div>
 
 <script>
-const DATA = /*__DATA__*/ {};
+const DATA = /*__META__*/ {};
 
 /* ===== 基础 ===== */
-const ALL = DATA.repos || [];
+const ALL = (window.__CHUNKS__||[]).flatMap(c => c.repos || []);
 const HLS = DATA.highlights || {};
 const state = {q:'',dirs:new Set(),langs:new Set(),minStar:0,since:'',sort:'stars-desc',
   view:'card',page:1,per:48,favOnly:false,hlOnly:false,randSeed:0,dirFilter:''};
@@ -817,8 +818,15 @@ async function onlineSearch(){
   try{
     const headers = {'Accept':'application/vnd.github+json'};
     const tk = getToken(); if(tk) headers.Authorization = 'Bearer ' + tk;
-    const res = await fetch('https://api.github.com/search/repositories?q=' + encodeURIComponent(q) + '&sort=stars&order=desc&per_page=30', {headers});
+    const url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(q) + '&sort=stars&order=desc&per_page=30';
+    let res = await fetch(url, {headers});
     const rem = res.headers.get('x-ratelimit-remaining');
+    if(res.status === 401){
+      localStorage.removeItem('gh_token');
+      toast('保存的 Token 无效，已自动清除，改用无认证模式重试');
+      delete headers.Authorization;
+      res = await fetch(url, {headers});
+    }
     if(res.status === 403 || res.status === 429){ toast('速率限制：未认证 10 次/分，带 Token 30 次/分'); return; }
     if(!res.ok){ const e = await res.json().catch(()=>({})); toast('搜索失败：' + (e.message || res.status)); return; }
     const data = await res.json();

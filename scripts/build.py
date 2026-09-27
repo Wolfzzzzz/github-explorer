@@ -103,9 +103,8 @@ for d in dir_order:
         "prio": "🟢 自动", "prioClass": "p3",
     })
 
-data = {
+meta = {
     "generatedAt": now.strftime("%Y-%m-%d %H:%M") + " UTC",
-    "repos": repos,
     "dirNames": dir_order,
     "topLangs": top_langs,
     "trending": trending,
@@ -113,16 +112,30 @@ data = {
     "highlights": highlights,
 }
 
-# 关键：数据里可能含 </script>（XSS payload 类描述），必须转义否则页面白屏
-payload = (json.dumps(data, ensure_ascii=False)
-           .replace("<", "\\u003c")
-           .replace("\u2028", "\\u2028")
-           .replace("\u2029", "\\u2029"))
-html = template.replace("/*__DATA__*/ {}", payload)
+# ===== 拆分存储：数据按片输出为独立 JS 文件，index.html 只保留页面代码 =====
+meta_payload = (json.dumps(meta, ensure_ascii=False)
+                .replace("<", "\\u003c")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029"))
 
-os.makedirs(os.path.join(ROOT, "_site"), exist_ok=True)
-with open(os.path.join(ROOT, "index.html"), "w", encoding="utf-8") as f:
-    f.write(html)
+CHUNK = 15000
+chunks = [repos[i:i + CHUNK] for i in range(0, len(repos), CHUNK)] or [[]]
+
+scripts = [f'<script>window.__CHUNKS__=window.__CHUNKS__||[];window.__CHUNK_TOTAL__={len(chunks)};</script>']
+os.makedirs(os.path.join(ROOT, "_site", "data"), exist_ok=True)
+for i, ch in enumerate(chunks):
+    body = ("window.__CHUNKS__.push({repos:"
+            + json.dumps(ch, ensure_ascii=False).replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+            + "});")
+    with open(os.path.join(ROOT, "_site", "data", f"data-{i}.js"), "w", encoding="utf-8") as f:
+        f.write(body)
+    scripts.append(f'<script src="data/data-{i}.js"></script>')
+
+html = (template
+        .replace("<!--DATA_SCRIPTS-->", "\n".join(scripts))
+        .replace("/*__META__*/ {}", meta_payload))
+
 with open(os.path.join(ROOT, "_site", "index.html"), "w", encoding="utf-8") as f:
     f.write(html)
-print(f"OK index.html | repos={len(repos)} dirs={len(dir_order)} highlights={len(highlights)}")
+print(f"OK _site/index.html + data/{len(chunks)} 个分片 | repos={len(repos)} dirs={len(dir_order)} highlights={len(highlights)}")
