@@ -401,9 +401,23 @@ async function ensureAllFull(){
   allFullDone = true; IDX = null;
 }
 
+/* ===== 分项协议同意（granular consent，全部本地存储）===== */
+let CONSENT = null;
+try{ CONSENT = JSON.parse(localStorage.getItem('gh_consent') || 'null'); }catch(_){}
+
 /* ===== 个性化偏好（纯本地记录，驱动推荐算法）===== */
 let PREF = JSON.parse(localStorage.getItem('gh_pref') || '{"dirs":{},"langs":{},"opens":0}');
+function applyConsent(){
+  if(!CONSENT.hist){
+    localStorage.removeItem('gh_hist'); hist = [];
+  }
+  if(!CONSENT.prefs){
+    localStorage.removeItem('gh_pref'); PREF = {dirs:{},langs:{},opens:0};
+  }
+  renderHist(); render();
+}
 function recordPref(r){
+  if(!CONSENT || !CONSENT.prefs) return;
   try{
     PREF.dirs[r.direction] = (PREF.dirs[r.direction]||0)+1;
     PREF.langs[r.language] = (PREF.langs[r.language]||0)+1;
@@ -544,7 +558,7 @@ function render(){
   const card = r => `
     <div class="card ${favs.has(hlKey(r))?'fav':''}" data-k="${hlKey(r)}">
       <div class="card-top">
-        <img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=40" alt="" onerror="this.style.visibility='hidden'">
+        ${CONSENT.avatars ? `<img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=40" alt="" onerror="this.style.visibility='hidden'">` : ''}
         <div class="rname">${mark(r.owner,terms)}<span class="owner">/</span>${mark(r.name,terms)}</div>
       <div class="quick">
         <button class="qbtn" data-open="${r.url}" title="打开 GitHub">↗</button>
@@ -633,6 +647,7 @@ function renderHist(){
     `<button data-h="${esc(h)}">${esc(h)}</button>`).join('');
 }
 function pushHist(q){
+  if(!CONSENT || !CONSENT.hist) return;
   q = q.trim();
   if(!q || q.length < 2) return;
   hist = [q].concat(hist.filter(x => x !== q)).slice(0, 6);
@@ -673,7 +688,7 @@ async function openDrawer(k){
   const h = hlText(r);
   document.getElementById('drawer').innerHTML = `
     <div class="dhead">
-      <img class="avatar" style="width:44px;height:44px;flex:0 0 44px" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=80" alt="" onerror="this.style.visibility='hidden'">
+      ${CONSENT.avatars ? `<img class="avatar" style="width:44px;height:44px;flex:0 0 44px" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=80" alt="" onerror="this.style.visibility='hidden'">` : ''}
       <h3>${esc(r.owner)} / ${esc(r.name)}</h3>
       <button class="closebtn" id="dClose">✕</button>
     </div>
@@ -999,7 +1014,7 @@ function renderRecs(){
     <p class="sub">已学习你的 <b>${PREF.opens}</b> 次浏览 · 偏好方向：${esc(top)} · <span style="color:var(--accent)">每次点开详情都会实时进化</span></p>
     <div class="tgrid">${rows.map(r=>`
       <div class="tcard" data-k="${hlKey(r)}" style="cursor:pointer">
-        <img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=60" alt="" onerror="this.style.visibility='hidden'">
+        ${CONSENT.avatars ? `<img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=60" alt="" onerror="this.style.visibility='hidden'">` : ''}
         <div class="info"><div class="nm">${esc(r.owner+'/'+r.name)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(r.description)}</div>
           <div style="margin-top:5px"><span class="tagdir">${esc(r.direction)}</span> <span class="badge">${esc(r.language)}</span></div></div>
@@ -1214,6 +1229,60 @@ function showNotice(){
     closeAll();
   };
 }
+function showNotice(force){
+  if(!force && CONSENT && CONSENT.base) return;
+  const m = document.getElementById('modal');
+  const def = CONSENT || {avatars:true, prefs:true, hist:true};
+  const ck = (id, label, desc, on) => `
+    <label style="display:flex;gap:10px;align-items:flex-start;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
+      <input type="checkbox" id="${id}" ${on?'checked':''} style="margin-top:3px;accent-color:var(--accent)">
+      <span><b style="font-size:13px">${label}</b><br><span style="font-size:11.5px;color:var(--muted)">${desc}</span></span>
+    </label>`;
+  m.innerHTML = `<div class="mhead"><h3>📋 使用须知与隐私设置</h3></div>
+    <div class="mbody" style="font-size:12.5px;line-height:1.7">
+      <p><b>① 基础条款（必须同意才能使用本站）</b></p>
+      <p>本站全部仓库数据来自 <b>GitHub 公开 Search API</b>，版权归各自仓库作者，使用代码请遵循其原始许可证。内容仅供学习参考，按"现状"提供，本站不对数据准确性作保证。本站为纯静态页面，无自有服务器。</p>
+      <p style="margin-top:12px"><b>② 可选功能授权</b>（可单独同意或拒绝；拒绝仅关闭对应功能，不影响其他功能；随时可在帮助面板重新设置）：</p>
+      ${ck('ckAvatars','显示项目头像','将向 GitHub 头像 CDN（avatars.githubusercontent.com）请求项目所有者头像，用于界面展示', def.avatars !== false)}
+      ${ck('ckPrefs','记录浏览偏好（驱动 🎯 推荐算法）','在本地 localStorage 记录你点开仓库的方向/语言/Star 量级，用于个性化推荐。纯本地计算，不上传任何数据', def.prefs !== false)}
+      ${ck('ckHist','保存搜索历史','在本地 localStorage 保留最近 6 条搜索词，方便重复搜索', def.hist !== false)}
+      <p style="font-size:11.5px;color:var(--muted);margin-top:8px">🔒 除上述内容外，本站不收集、不上传任何数据，无任何追踪/统计/广告脚本。拒绝的可选项随时可再开启。</p>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn" id="noticeAgree">保存选择并进入</button>
+        <button class="btn sec" id="noticeDecline">拒绝基础条款并离开</button>
+      </div>
+    </div>`;
+  m.classList.add('show');
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('noticeAgree').onclick = () => {
+    CONSENT = {
+      base: true,
+      avatars: document.getElementById('ckAvatars').checked,
+      prefs: document.getElementById('ckPrefs').checked,
+      hist: document.getElementById('ckHist').checked
+    };
+    localStorage.setItem('gh_consent', JSON.stringify(CONSENT));
+    applyConsent();
+    closeAll(); render(); setTab('lib');
+    toast('偏好设置已保存');
+  };
+  document.getElementById('noticeDecline').onclick = showRefused;
+}
+function showRefused(){
+  const m = document.getElementById('modal');
+  m.innerHTML = `<div class="mhead"><h3>你已拒绝基础使用条款</h3></div>
+    <div class="mbody" style="font-size:13px;text-align:center;padding:30px 18px">
+      <div style="font-size:40px;margin-bottom:10px">🚫</div>
+      <p>由于未同意基础使用条款（数据来源与免责声明），本站无法继续为你提供浏览服务。</p>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">你的本地数据均已保留；如改变主意，可点击下方按钮重新阅读条款。</p>
+      <div class="btnrow" style="justify-content:center;margin-top:14px">
+        <button class="btn" id="reconsider">重新阅读条款</button>
+      </div>
+    </div>`;
+  m.classList.add('show');
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('reconsider').onclick = () => showNotice(true);
+}
 function showHelp(){
   const m = document.getElementById('modal');
   m.innerHTML = `<div class="mhead"><h3>使用说明 & 快捷键</h3><button class="closebtn" id="hClose">✕</button></div>
@@ -1261,9 +1330,11 @@ function boot(){
     bar.style.width = '75%';
     tip.textContent = '正在渲染…';
     setTimeout(() => {
-      render(); setTab('lib');
+      const needConsent = !(CONSENT && CONSENT.base);
+      if(needConsent){ showNotice(); }
+      else { render(); setTab('lib'); }
       bar.style.width = '100%';
-      setTimeout(() => { document.getElementById('boot').classList.add('hide'); showNotice(); }, 220);
+      setTimeout(() => { document.getElementById('boot').classList.add('hide'); }, 220);
     }, 30);
   }, 30);
 }
