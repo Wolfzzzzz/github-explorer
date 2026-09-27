@@ -108,6 +108,7 @@ input[type=range]{width:120px;accent-color:var(--accent)}
 @keyframes cardIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .card:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg);border-color:var(--accent)}
 .card.fav{border-color:var(--star)}
+.avatar{width:26px;height:26px;border-radius:50%;flex:0 0 26px;background:var(--panel2);object-fit:cover}
 .card-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}
 .rname{font-weight:700;font-size:14px;line-height:1.3;word-break:break-all;flex:1}
 .rname .owner{color:var(--muted);font-weight:500}
@@ -257,6 +258,7 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
     <div class="kpis" id="kpis"></div>
     <div class="tabs">
       <button class="tab active" data-tab="lib">🗂 仓库库</button>
+      <button class="tab" data-tab="recs">🎯 推荐</button>
       <button class="tab" data-tab="trend">🔥 趋势榜</button>
       <button class="tab" data-tab="insight">💡 洞察建议</button>
       <button class="tab" data-tab="stats">📊 统计</button>
@@ -332,6 +334,7 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
   <div class="tblwrap" id="tblwrap" style="display:none"></div>
 </main>
 
+<section class="sec" id="secRecs"></section>
 <section class="sec" id="secTrend"></section>
 <section class="sec" id="secInsight"></section>
 <section class="sec" id="secStats"></section>
@@ -352,9 +355,71 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
 <script>
 const DATA = /*__META__*/ {};
 
-/* ===== 基础 ===== */
-const ALL = (window.__CHUNKS__||[]).flatMap(c => c.repos || []);
+/* ===== 基础：轻量索引首屏 + 完整数据按需加载 ===== */
+const L = window.__LIGHT__ || {dirs:[],langs:[],repos:[]};
+const CHUNK_SIZE = DATA.chunkSize || 15000;
+const ALL = L.repos.map((a, i) => ({
+  name: a[0], owner: a[1], stars: a[2],
+  direction: L.dirs[a[3]] || '—',
+  language: L.langs[a[4]] || '—',
+  description: a[5], updatedAt: a[6] || '',
+  createdAt: '', forks: 0, matchedQuery: '',
+  url: 'https://github.com/' + a[1] + '/' + a[0],
+  _light: true, _i: i
+}));
+const IDX_BY_KEY = new Map(ALL.map((r, i) => [r.owner + '/' + r.name, i]));
 const HLS = DATA.highlights || {};
+let fullLoaded = new Set(), allFullDone = false;
+
+function loadFullChunk(ci){
+  return new Promise(res => {
+    if(fullLoaded.has(ci)) return res();
+    const s = document.createElement('script');
+    s.src = 'data/full-' + ci + '.js';
+    s.onload = () => {
+      fullLoaded.add(ci);
+      const part = (window.__FULL__||[]).find(p => p.from === ci * CHUNK_SIZE);
+      if(part) part.repos.forEach((r, j) => {
+        const k = ci * CHUNK_SIZE + j;
+        if(ALL[k]){ r._i = k; ALL[k] = r; }
+      });
+      IDX = null;
+      res();
+    };
+    s.onerror = () => res();
+    document.head.appendChild(s);
+  });
+}
+const ensureFullFor = i => loadFullChunk(Math.floor(i / CHUNK_SIZE));
+async function ensureAllFull(){
+  if(allFullDone) return;
+  const total = Math.ceil(ALL.length / CHUNK_SIZE);
+  for(let ci = 0; ci < total; ci++){
+    await loadFullChunk(ci);
+    toast(`全文数据加载中 ${Math.round((ci+1)/total*100)}%`);
+  }
+  allFullDone = true; IDX = null;
+}
+
+/* ===== 个性化偏好（纯本地记录，驱动推荐算法）===== */
+let PREF = JSON.parse(localStorage.getItem('gh_pref') || '{"dirs":{},"langs":{},"opens":0}');
+function recordPref(r){
+  try{
+    PREF.dirs[r.direction] = (PREF.dirs[r.direction]||0)+1;
+    PREF.langs[r.language] = (PREF.langs[r.language]||0)+1;
+    PREF.opens++;
+    localStorage.setItem('gh_pref', JSON.stringify(PREF));
+  }catch(_){}
+}
+function recommendations(){
+  const totD = Object.values(PREF.dirs).reduce((a,b)=>a+b,0) || 1;
+  const totL = Object.values(PREF.langs).reduce((a,b)=>a+b,0) || 1;
+  const wD = d => (PREF.dirs[d]||0)/totD;
+  const wL = l => (PREF.langs[l]||0)/totL;
+  return ALL.filter(r => !favs.has(hlKey(r)))
+    .map(r => ({r, s: Math.log10(r.stars+1) * (1 + 3*wD(r.direction) + 1.5*wL(r.language)) * (0.6 + 0.8*Math.random())}))
+    .sort((a,b) => b.s - a.s).slice(0, 24).map(x => x.r);
+}
 const state = {q:'',dirs:new Set(),langs:new Set(),minStar:0,since:'',sort:'stars-desc',
   view:'card',page:1,per:48,favOnly:false,hlOnly:false,randSeed:0,dirFilter:''};
 let SHUF = new Map(), shufSeed = -1;
@@ -479,7 +544,8 @@ function render(){
   const card = r => `
     <div class="card ${favs.has(hlKey(r))?'fav':''}" data-k="${hlKey(r)}">
       <div class="card-top">
-      <div class="rname">${mark(r.owner,terms)}<span class="owner">/</span>${mark(r.name,terms)}</div>
+        <img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=40" alt="" onerror="this.style.visibility='hidden'">
+        <div class="rname">${mark(r.owner,terms)}<span class="owner">/</span>${mark(r.name,terms)}</div>
       <div class="quick">
         <button class="qbtn" data-open="${r.url}" title="打开 GitHub">↗</button>
         <button class="qbtn" data-copy="${r.url}" title="复制链接">⧉</button>
@@ -598,11 +664,16 @@ function readHash(){
 }
 
 /* ===== 抽屉 ===== */
-function openDrawer(k){
-  const r = ALL.find(x => hlKey(x) === k); if(!r) return;
+async function openDrawer(k){
+  const idx0 = IDX_BY_KEY.get(k);
+  if(idx0 === undefined) return;
+  if(ALL[idx0]._light) await ensureFullFor(idx0);
+  const r = ALL[idx0]; if(!r) return;
+  recordPref(r);
   const h = hlText(r);
   document.getElementById('drawer').innerHTML = `
     <div class="dhead">
+      <img class="avatar" style="width:44px;height:44px;flex:0 0 44px" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=80" alt="" onerror="this.style.visibility='hidden'">
       <h3>${esc(r.owner)} / ${esc(r.name)}</h3>
       <button class="closebtn" id="dClose">✕</button>
     </div>
@@ -795,7 +866,7 @@ document.getElementById('exportBtn').onclick = () => {
   document.getElementById('overlay').classList.add('show');
   m.querySelector('#exClose').onclick = () => { m.remove(); document.getElementById('overlay').classList.remove('show'); };
   m.querySelectorAll('[data-ex]').forEach(b => b.onclick = () => {
-    exportData(b.dataset.ex);
+    ensureAllFull().then(() => exportData(b.dataset.ex));
     m.remove(); document.getElementById('overlay').classList.remove('show');
   });
 };
@@ -912,6 +983,40 @@ function renderStats(){
       <p class="sub" style="margin:2px 0 9px">共用了 <b>${Object.keys(kwCnt).length}</b> 个搜索词，下面是命中最多的 ${topKw.length} 个</p>
       <div class="chips">${topKw.map(([k,n])=>`<button class="chip" data-kw="${esc(k)}">${esc(k)}<span class="n">${n}</span></button>`).join('')}</div></div>`;
 }
+function renderRecs(){
+  const el = document.getElementById('secRecs');
+  if(PREF.opens < 3){
+    el.innerHTML = `<h2 class="st">🎯 为你推荐</h2>
+      <div class="empty"><div class="big">🎯</div>
+      <div>你才点开了 ${PREF.opens} 个仓库，算法还不够了解你～</div>
+      <div style="margin-top:8px;font-size:12.5px">多点开几个感兴趣的仓库详情，算法会记录你的<br><b>方向 · 语言 · Star 量级</b>偏好，越用越准。完全本地计算，不上传任何数据。</div></div>`;
+    return;
+  }
+  const top = Object.entries(PREF.dirs).sort((a,b)=>b[1]-a[1]).slice(0,3)
+    .map(([d,n])=>`${d} ${Math.round(n/PREF.opens*100)}%`).join(' · ');
+  const rows = recommendations();
+  el.innerHTML = `<h2 class="st">🎯 为你推荐</h2>
+    <p class="sub">已学习你的 <b>${PREF.opens}</b> 次浏览 · 偏好方向：${esc(top)} · <span style="color:var(--accent)">每次点开详情都会实时进化</span></p>
+    <div class="tgrid">${rows.map(r=>`
+      <div class="tcard" data-k="${hlKey(r)}" style="cursor:pointer">
+        <img class="avatar" loading="lazy" src="https://avatars.githubusercontent.com/${esc(r.owner)}?size=60" alt="" onerror="this.style.visibility='hidden'">
+        <div class="info"><div class="nm">${esc(r.owner+'/'+r.name)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(r.description)}</div>
+          <div style="margin-top:5px"><span class="tagdir">${esc(r.direction)}</span> <span class="badge">${esc(r.language)}</span></div></div>
+        <div class="tside"><div style="color:var(--star);font-weight:700">★ ${fmt(r.stars)}</div>
+          <div style="font-size:11px;color:var(--muted)">${ago(r.updatedAt)}</div></div>
+      </div>`).join('')}</div>
+    <div class="btnrow" style="margin-top:12px"><button class="btn sec" id="recsAgain">🎲 换一批推荐</button>
+    <button class="btn sec" id="prefReset">清空偏好记录</button></div>`;
+  document.getElementById('recsAgain').onclick = () => renderRecs();
+  document.getElementById('prefReset').onclick = () => {
+    if(confirm('清空全部偏好记录？推荐将重新学习。')){
+      PREF = {dirs:{},langs:{},opens:0};
+      localStorage.setItem('gh_pref', JSON.stringify(PREF));
+      renderRecs();
+    }
+  };
+}
 function renderFav(){
   const rows = ALL.filter(r => favs.has(hlKey(r)));
   let h = `<h2 class="st">⭐ 我的收藏（${rows.length}）</h2><p class="sub">保存在浏览器本地，刷新不丢</p>`;
@@ -945,7 +1050,7 @@ let debounceT = null;
 document.getElementById('q').addEventListener('input', e => {
   const v = e.target.value;
   clearTimeout(debounceT);
-  debounceT = setTimeout(() => { state.q = v; state.page = 1; render(); pushHist(v); }, 140);
+  debounceT = setTimeout(() => { state.q = v; state.page = 1; render(); pushHist(v); if(v.trim().length >= 2) ensureAllFull().then(() => render()); }, 140);
 });
 document.getElementById('starRange').addEventListener('input', e => {
   const v = +e.target.value;
@@ -954,7 +1059,7 @@ document.getElementById('starRange').addEventListener('input', e => {
   state.page = 1; render();
 });
 document.getElementById('sinceSel').onchange = e => { state.since = e.target.value; state.page = 1; render(); };
-document.getElementById('sortSel').onchange = e => { state.sort = e.target.value; render(); };
+document.getElementById('sortSel').onchange = e => { state.sort = e.target.value; if(['forks-desc','created-desc'].includes(state.sort)) ensureAllFull().then(()=>render()); render(); };
 document.getElementById('viewSel').onchange = e => { state.view = e.target.value; render(); };
 document.getElementById('perSel').onchange = e => { state.per = +e.target.value; state.page = 1; render(); };
 document.getElementById('denseSel').onchange = e => { document.body.classList.toggle('dense', !!e.target.value); };
@@ -1033,6 +1138,8 @@ document.addEventListener('click', e => {
   if(qc){ e.stopPropagation(); navigator.clipboard.writeText(qc.dataset.copy); toast('已复制链接'); return; }
   const tu = e.target.closest('[data-url]');
   if(tu){ window.open(tu.dataset.url, '_blank'); return; }
+  const tcard = e.target.closest('.tcard[data-k]');
+  if(tcard){ openDrawer(tcard.dataset.k); return; }
   const card = e.target.closest('.card,.row');
   if(card && card.dataset.k){ openDrawer(card.dataset.k); return; }
   const tr = e.target.closest('tr[data-k]');
@@ -1040,7 +1147,7 @@ document.addEventListener('click', e => {
 });
 
 /* ===== 页签 ===== */
-const TABS = {lib:'mainLib', trend:'secTrend', insight:'secInsight', stats:'secStats', fav:'secFav'};
+const TABS = {lib:'mainLib', recs:'secRecs', trend:'secTrend', insight:'secInsight', stats:'secStats', fav:'secFav'};
 function setTab(t){
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
   Object.keys(TABS).forEach(k => {
@@ -1052,6 +1159,8 @@ function setTab(t){
   document.querySelector('.hint').style.display = t === 'lib' ? '' : 'none';
   document.querySelector('.resbar').style.display = t === 'lib' ? '' : 'none';
   if(t === 'fav') renderFav();
+  if(t === 'recs') renderRecs();
+  if(t === 'stats') ensureAllFull().then(renderStats);
   window.scrollTo({top:0});
   syncHash();
 }
@@ -1083,10 +1192,28 @@ document.addEventListener('keydown', e => {
   else if(e.key === 't' || e.key === 'T'){ setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); }
   else if(e.key === 'c' || e.key === 'C'){ resetAll(); }
   else if(e.key === 'r' || e.key === 'R'){ document.getElementById('randBtn').click(); }
-  else if(['1','2','3','4','5'].includes(e.key)){ setTab(['lib','trend','insight','stats','fav'][+e.key-1]); }
+  else if(['1','2','3','4','5','6'].includes(e.key)){ setTab(['lib','recs','trend','insight','stats','fav'][+e.key-1]); }
 });
 
 /* ===== 帮助面板 ===== */
+function showNotice(){
+  if(localStorage.getItem('gh_notice_ok')) return;
+  const m = document.getElementById('modal');
+  m.innerHTML = `<div class="mhead"><h3>📋 使用须知与隐私说明</h3></div>
+    <div class="mbody" style="font-size:12.5px;line-height:1.7">
+      <p><b>📦 数据来源</b>：本站全部仓库数据来自 GitHub 公开 Search API，版权归各自作者所有，使用代码请遵循其原始许可证。内容仅供学习参考，按"现状"提供。</p>
+      <p><b>🔒 隐私</b>：你的收藏、浏览偏好、筛选状态、GitHub Token <b>全部只保存在本浏览器本地</b>（localStorage）。本站没有自己的服务器，<b>不收集、不上传任何个人数据</b>，清空浏览器数据即彻底删除。</p>
+      <p><b>🌐 网络请求</b>：仅两类——① GitHub API（仅当使用"🌐 在线搜索"时）；② GitHub 头像 CDN（显示项目所有者头像）。全站无任何统计/追踪/广告脚本。</p>
+      <p><b>🎯 推荐算法</b>：根据你在本机上的点开记录（方向/语言/Star 量级）在浏览器内本地计算，用于排序推荐，随时可在推荐页清空。</p>
+      <div class="btnrow" style="margin-top:14px"><button class="btn" id="noticeOk">我已阅读并同意</button></div>
+    </div>`;
+  m.classList.add('show');
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('noticeOk').onclick = () => {
+    localStorage.setItem('gh_notice_ok', '1');
+    closeAll();
+  };
+}
 function showHelp(){
   const m = document.getElementById('modal');
   m.innerHTML = `<div class="mhead"><h3>使用说明 & 快捷键</h3><button class="closebtn" id="hClose">✕</button></div>
@@ -1136,7 +1263,7 @@ function boot(){
     setTimeout(() => {
       render(); setTab('lib');
       bar.style.width = '100%';
-      setTimeout(() => document.getElementById('boot').classList.add('hide'), 220);
+      setTimeout(() => { document.getElementById('boot').classList.add('hide'); showNotice(); }, 220);
     }, 30);
   }, 30);
 }

@@ -103,8 +103,10 @@ for d in dir_order:
         "prio": "🟢 自动", "prioClass": "p3",
     })
 
+CHUNK = 15000
 meta = {
     "generatedAt": now.strftime("%Y-%m-%d %H:%M") + " UTC",
+    "chunkSize": CHUNK,
     "dirNames": dir_order,
     "topLangs": top_langs,
     "trending": trending,
@@ -112,30 +114,48 @@ meta = {
     "highlights": highlights,
 }
 
-# ===== 拆分存储：数据按片输出为独立 JS 文件，index.html 只保留页面代码 =====
+# ===== 拆分存储 v2：轻量索引首屏加载 + 完整分片按需加载 =====
 meta_payload = (json.dumps(meta, ensure_ascii=False)
                 .replace("<", "\\u003c")
                 .replace("\u2028", "\\u2028")
                 .replace("\u2029", "\\u2029"))
 
-CHUNK = 15000
 chunks = [repos[i:i + CHUNK] for i in range(0, len(repos), CHUNK)] or [[]]
 
-scripts = [f'<script>window.__CHUNKS__=window.__CHUNKS__||[];window.__CHUNK_TOTAL__={len(chunks)};</script>']
+# 轻量索引：[name, owner, stars, dirIdx, langIdx, desc60, updated] —— 首屏只载这个
+all_langs = sorted({r.get("language", "—") for r in repos})
+lang_idx = {l: i for i, l in enumerate(all_langs)}
+dir_idx = {d: i for i, d in enumerate(dir_order)}
+light = []
+for r in repos:
+    d = r.get("description") or ""
+    if len(d) > 60:
+        d = d[:57] + "..."
+    light.append([r["name"], r["owner"], r.get("stars", 0),
+                  dir_idx.get(r.get("direction"), 0),
+                  lang_idx.get(r.get("language", "—"), 0),
+                  d, (r.get("updatedAt") or "")[:10]])
+light_js = ("window.__LIGHT__={dirs:" + json.dumps(dir_order, ensure_ascii=False)
+            + ",langs:" + json.dumps(all_langs, ensure_ascii=False)
+            + ",repos:" + json.dumps(light, ensure_ascii=False).replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "};")
+with open(os.path.join(ROOT, "_site", "data", "meta.js"), "w", encoding="utf-8") as f:
+    f.write(light_js)
+
+# 完整分片：点开详情/深度搜索时才动态加载
 os.makedirs(os.path.join(ROOT, "_site", "data"), exist_ok=True)
 for i, ch in enumerate(chunks):
-    body = ("window.__CHUNKS__.push({repos:"
-            + json.dumps(ch, ensure_ascii=False).replace("<", "\\u003c")
-            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-            + "});")
-    with open(os.path.join(ROOT, "_site", "data", f"data-{i}.js"), "w", encoding="utf-8") as f:
+    body = ("window.__FULL__=window.__FULL__||[];window.__FULL__.push({from:" + str(i * CHUNK)
+            + ",repos:" + json.dumps(ch, ensure_ascii=False).replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "});")
+    with open(os.path.join(ROOT, "_site", "data", f"full-{i}.js"), "w", encoding="utf-8") as f:
         f.write(body)
-    scripts.append(f'<script src="data/data-{i}.js"></script>')
 
+scripts = ['<script src="data/meta.js"></script>']
 html = (template
         .replace("<!--DATA_SCRIPTS-->", "\n".join(scripts))
         .replace("/*__META__*/ {}", meta_payload))
 
 with open(os.path.join(ROOT, "_site", "index.html"), "w", encoding="utf-8") as f:
     f.write(html)
-print(f"OK _site/index.html + data/{len(chunks)} 个分片 | repos={len(repos)} dirs={len(dir_order)} highlights={len(highlights)}")
+print(f"OK _site: index.html(轻量) + meta.js({len(light)} 条索引) + full/{len(chunks)} 个完整分片 | dirs={len(dir_order)}")
