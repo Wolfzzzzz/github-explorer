@@ -328,6 +328,8 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
   </div>
 </div>
 
+<div class="hint" id="loadingHint" style="display:none"></div>
+
 <main id="mainLib">
   <div class="grid" id="grid"></div>
   <div class="list" id="list" style="display:none"></div>
@@ -404,27 +406,41 @@ function loadMetaChunk(ci){
   });
 }
 const loadedCount = () => ALL.filter(Boolean).length;
+let allMetaDone = false;
 function refreshPartial(){
   IDX = null;
   renderKpis([]);
   if(document.getElementById('mainLib').style.display !== 'none') render();
 }
+function metaProgressText(){
+  return `数据加载中 ${loadedMeta.size}/${META_CHUNKS} 片（已就绪 ${fnum(loadedCount())} / ${fnum(DATA.totalRepos)} 个仓库）`;
+}
 async function loadAllMeta(){
   const bar = document.getElementById('bootBar'), tip = document.getElementById('bootTip');
   dirsList = DATA.dirNames || dirsList;
-  await loadMetaChunk(0);                       // 首片：最热门 15000 个
-  if(bar) bar.style.width = Math.max(12, Math.round(1 / META_CHUNKS * 100)) + '%';
-  if(tip) tip.textContent = `已加载 ${fnum(loadedCount())} 个仓库，可以开始用了`;
-  bootUI();                                     // 立即渲染 + 放行
-  for(let ci = 1; ci < META_CHUNKS; ci++){      // 其余片：后台续载
-    await loadMetaChunk(ci);
+  await loadMetaChunk(0);                       // 首片：最热门 5000 个 → 立即渲染
+  if(tip) tip.textContent = `已加载 ${fnum(loadedCount())} 个仓库`;
+  bootUI();
+  for(let ci = 1; ci < META_CHUNKS; ci++){      // 其余片：后台续载（单片异常不中断后续）
+    try{
+      await loadMetaChunk(ci);
+    }catch(err){ console.warn('meta chunk ' + ci + ' 加载失败', err); }
     if(bar) bar.style.width = Math.round((ci + 1) / META_CHUNKS * 100) + '%';
-    if(tip) tip.textContent = `后台加载中 ${fnum(loadedCount())} / ${fnum(DATA.totalRepos)}`;
-    if(ci % 2 === 0) refreshPartial();
+    if(tip) tip.textContent = metaProgressText();
+    if(ci % 3 === 0) refreshPartial();
+    updateLoadingHint();
   }
+  allMetaDone = true;
   refreshPartial();
+  updateLoadingHint();
   if(tip) tip.textContent = `全部就绪：${fnum(DATA.totalRepos)} 个仓库`;
-  setTimeout(() => document.getElementById('boot').classList.add('hide'), 500);
+}
+function updateLoadingHint(){
+  const el = document.getElementById('loadingHint');
+  if(!el) return;
+  if(allMetaDone){ el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = `⏳ ${metaProgressText()} — 国内访问 GitHub Pages 较慢，数据会陆续到位，期间可正常浏览已加载部分`;
 }
 
 function loadFullChunk(ci){
@@ -458,8 +474,11 @@ async function ensureAllFull(){
 }
 
 /* ===== 分项协议同意（granular consent，全部本地存储）===== */
-let CONSENT = null;
-try{ CONSENT = JSON.parse(localStorage.getItem('gh_consent') || 'null'); }catch(_){}
+let CONSENT = {base:false, avatars:true, prefs:false, hist:false};
+try{
+  const savedConsent = JSON.parse(localStorage.getItem('gh_consent') || 'null');
+  if(savedConsent && typeof savedConsent === 'object') CONSENT = savedConsent;
+}catch(_){}
 
 /* ===== 个性化偏好（纯本地记录，驱动推荐算法）===== */
 let PREF = JSON.parse(localStorage.getItem('gh_pref') || '{"dirs":{},"langs":{},"opens":0}');
@@ -598,6 +617,14 @@ let curIdx = -1;
 function render(){
   const rows = filtered();
   lastRows = rows;
+  if(!rows.length && !allMetaDone){
+    const sk = '<div class="sk"><i style="width:55%"></i><i style="width:92%"></i><i style="width:70%"></i></div>';
+    const g0 = document.getElementById('grid'), l0 = document.getElementById('list'), t0 = document.getElementById('tblwrap');
+    if(state.view === 'card'){ g0.innerHTML = new Array(12).fill(sk).join(''); g0.style.display=''; l0.style.display='none'; t0.style.display='none'; }
+    renderKpis([]);
+    updateLoadingHint();
+    return;
+  }
   const total = rows.length, pages = Math.max(1, Math.ceil(total/state.per));
   if(state.page > pages) state.page = pages;
   const slice = state.per >= 9999 ? rows : rows.slice((state.page-1)*state.per, state.page*state.per);
@@ -1378,23 +1405,25 @@ function showHelp(){
 }
 
 /* ===== 启动 ===== */
-function bootUI(){
+function bootShell(){          // 立即执行：不依赖任何仓库数据
   setTheme(localStorage.getItem('gh_theme') || 'light');
   readHash();
   if(state.q) document.getElementById('q').value = state.q;
   if(state.view !== 'card') document.getElementById('viewSel').value = state.view;
   if(state.sort !== 'stars-desc') document.getElementById('sortSel').value = state.sort;
-  renderTrend(); renderInsight(); renderStats(); renderFav(); renderHist();
-  const needConsent = !(CONSENT && CONSENT.base);
-  if(needConsent){ showNotice(); }
-  else { render(); setTab('lib'); }
-  const bar = document.getElementById('bootBar');
-  if(bar) bar.style.width = '100%';
+  renderTrend(); renderInsight(); renderFav(); renderHist();
+  if(!(CONSENT && CONSENT.base)){ showNotice(); }
+  else { setTab('lib'); render(); }
+  updateLoadingHint();
+}
+function bootUI(){             // 首片数据到达后
+  renderStats();
+  render();
+  if(CONSENT && CONSENT.base) setTab('lib');
 }
 function boot(){
-  setTheme(localStorage.getItem('gh_theme') || 'light');
-  const tip = document.getElementById('bootTip');
-  if(tip) tip.textContent = '正在连接数据源…';
+  bootShell();
+  setTimeout(() => document.getElementById('boot').classList.add('hide'), 500);
   loadAllMeta();
 }
 boot();

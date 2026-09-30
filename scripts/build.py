@@ -103,7 +103,7 @@ for d in dir_order:
         "prio": "🟢 自动", "prioClass": "p3",
     })
 
-CHUNK = 15000
+CHUNK = 5000
 meta = {
     "generatedAt": now.strftime("%Y-%m-%d %H:%M") + " UTC",
     "chunkSize": CHUNK,
