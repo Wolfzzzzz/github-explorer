@@ -355,21 +355,77 @@ kbd{background:var(--panel2);border:1px solid var(--border2);border-bottom-width
 <script>
 const DATA = /*__META__*/ {};
 
-/* ===== 基础：轻量索引首屏 + 完整数据按需加载 ===== */
-const L = window.__LIGHT__ || {dirs:[],langs:[],repos:[]};
+/* ===== 基础：渐进式加载（首片秒开，其余后台续载；索引与 full 分片对齐）===== */
 const CHUNK_SIZE = DATA.chunkSize || 15000;
-const ALL = L.repos.map((a, i) => ({
-  name: a[0], owner: a[1], stars: a[2],
-  direction: L.dirs[a[3]] || '—',
-  language: L.langs[a[4]] || '—',
-  description: a[5], updatedAt: a[6] || '',
-  createdAt: '', forks: 0, matchedQuery: '',
-  url: 'https://github.com/' + a[1] + '/' + a[0],
-  _light: true, _i: i
-}));
-const IDX_BY_KEY = new Map(ALL.map((r, i) => [r.owner + '/' + r.name, i]));
+const META_CHUNKS = DATA.metaChunks || 1;
+const ALL = new Array(DATA.totalRepos || 0);
+let loadedMeta = new Set(), dirsList = [], langsList = [];
+const IDX_BY_KEY = new Map();
 const HLS = DATA.highlights || {};
 let fullLoaded = new Set(), allFullDone = false;
+
+function absorbMetaPart(part){
+  if(!part || !part.repos) return 0;
+  if(part.dirs && part.dirs.length && !dirsList.length) dirsList = part.dirs;
+  if(part.langs && part.langs.length && !langsList.length) langsList = part.langs;
+  let n = 0;
+  part.repos.forEach((a, j) => {
+    const i = part.from + j;
+    if(ALL[i]) return;
+    const r = {
+      name: a[0], owner: a[1], stars: a[2], forks: a[3] || 0,
+      direction: dirsList[a[4]] || '—',
+      language: langsList[a[5]] || '—',
+      description: a[6], updatedAt: a[7] || '',
+      createdAt: a[8] || '', matchedQuery: a[9] || '',
+      url: 'https://github.com/' + a[1] + '/' + a[0],
+      _light: true, _i: i
+    };
+    ALL[i] = r;
+    IDX_BY_KEY.set(r.owner + '/' + r.name, i);
+    n++;
+  });
+  return n;
+}
+function loadMetaChunk(ci){
+  return new Promise(res => {
+    if(loadedMeta.has(ci)) return res();
+    const s = document.createElement('script');
+    s.src = 'data/meta-' + ci + '.js';
+    s.onload = () => {
+      loadedMeta.add(ci);
+      const part = (window.__META_PARTS__ || []).find(p => p.from === ci * CHUNK_SIZE);
+      absorbMetaPart(part);
+      IDX = null;
+      res();
+    };
+    s.onerror = () => res();
+    document.head.appendChild(s);
+  });
+}
+const loadedCount = () => ALL.filter(Boolean).length;
+function refreshPartial(){
+  IDX = null;
+  renderKpis([]);
+  if(document.getElementById('mainLib').style.display !== 'none') render();
+}
+async function loadAllMeta(){
+  const bar = document.getElementById('bootBar'), tip = document.getElementById('bootTip');
+  dirsList = DATA.dirNames || dirsList;
+  await loadMetaChunk(0);                       // 首片：最热门 15000 个
+  if(bar) bar.style.width = Math.max(12, Math.round(1 / META_CHUNKS * 100)) + '%';
+  if(tip) tip.textContent = `已加载 ${fnum(loadedCount())} 个仓库，可以开始用了`;
+  bootUI();                                     // 立即渲染 + 放行
+  for(let ci = 1; ci < META_CHUNKS; ci++){      // 其余片：后台续载
+    await loadMetaChunk(ci);
+    if(bar) bar.style.width = Math.round((ci + 1) / META_CHUNKS * 100) + '%';
+    if(tip) tip.textContent = `后台加载中 ${fnum(loadedCount())} / ${fnum(DATA.totalRepos)}`;
+    if(ci % 2 === 0) refreshPartial();
+  }
+  refreshPartial();
+  if(tip) tip.textContent = `全部就绪：${fnum(DATA.totalRepos)} 个仓库`;
+  setTimeout(() => document.getElementById('boot').classList.add('hide'), 500);
+}
 
 function loadFullChunk(ci){
   return new Promise(res => {
@@ -430,7 +486,7 @@ function recommendations(){
   const totL = Object.values(PREF.langs).reduce((a,b)=>a+b,0) || 1;
   const wD = d => (PREF.dirs[d]||0)/totD;
   const wL = l => (PREF.langs[l]||0)/totL;
-  return ALL.filter(r => !favs.has(hlKey(r)))
+  return ALL.filter(r => r && !favs.has(hlKey(r)))
     .map(r => ({r, s: Math.log10(r.stars+1) * (1 + 3*wD(r.direction) + 1.5*wL(r.language)) * (0.6 + 0.8*Math.random())}))
     .sort((a,b) => b.s - a.s).slice(0, 24).map(x => x.r);
 }
@@ -503,6 +559,7 @@ function filtered(){
   const out = [];
   for(let i=0;i<ALL.length;i++){
     const r = ALL[i];
+    if(!r) continue;
     if(state.favOnly && !favs.has(hlKey(r))) continue;
     if(state.hlOnly && !hlText(r)) continue;
     if(state.dirs.size && !state.dirs.has(r.direction)) continue;
@@ -620,7 +677,7 @@ function emptyHTML(terms){
 const _qbtn = (d, label) => `<button class="qbtn" ${d} title="${label}">${label === '打开 GitHub' ? '↗' : '⧉'}</button>`;
 function renderKpis(rows){
   const sum = rows.reduce((s,r)=>s+r.stars,0);
-  const data = [['当前结果', rows.length], ['仓库总数', ALL.length], ['方向', DATA.dirNames.length],
+  const data = [['当前结果', rows.length], ['仓库总数', DATA.totalRepos || loadedCount()], ['方向', DATA.dirNames.length],
                 ['⭐推荐', Object.keys(HLS).length], ['收藏', favs.size],
                 ['更新', DATA.generatedAt.slice(5, 16)]];
   const box = document.getElementById('kpis');
@@ -881,7 +938,7 @@ document.getElementById('exportBtn').onclick = () => {
   document.getElementById('overlay').classList.add('show');
   m.querySelector('#exClose').onclick = () => { m.remove(); document.getElementById('overlay').classList.remove('show'); };
   m.querySelectorAll('[data-ex]').forEach(b => b.onclick = () => {
-    ensureAllFull().then(() => exportData(b.dataset.ex));
+    exportData(b.dataset.ex);
     m.remove(); document.getElementById('overlay').classList.remove('show');
   });
 };
@@ -921,10 +978,12 @@ async function onlineSearch(){
     for(const it of (data.items || [])){
       if(urls.has(it.html_url)){ skip++; continue; }
       urls.add(it.html_url);
-      ALL.push({name:it.name, owner:(it.owner&&it.owner.login)||'', url:it.html_url,
+      const nr = {name:it.name, owner:(it.owner&&it.owner.login)||'', url:it.html_url,
         description:it.description||'', stars:it.stargazers_count||0, forks:it.forks_count||0,
         language:it.language||'—', updatedAt:it.updated_at||'', createdAt:it.created_at||'',
-        matchedQuery:'🌐 ' + q, direction:'🌐 在线搜索'});
+        matchedQuery:'🌐 ' + q, direction:'🌐 在线搜索'};
+      ALL.push(nr);
+      IDX_BY_KEY.set(nr.owner + '/' + nr.name, ALL.length - 1);
       added++;
     }
     if(added && !DATA.dirNames.includes('🌐 在线搜索')) DATA.dirNames.push('🌐 在线搜索');
@@ -966,25 +1025,26 @@ function renderInsight(){
 }
 function renderStats(){
   const kwCnt = {};
-  ALL.forEach(r => { if(r.matchedQuery) kwCnt[r.matchedQuery] = (kwCnt[r.matchedQuery]||0)+1; });
+  ALL.forEach(r => { if(r && r.matchedQuery) kwCnt[r.matchedQuery] = (kwCnt[r.matchedQuery]||0)+1; });
   const topKw = Object.entries(kwCnt).sort((a,b) => b[1]-a[1]).slice(0, 60);
   const byDir = DATA.dirNames.map(d => {
-    const rs = ALL.filter(r => r.direction === d);
+    const rs = ALL.filter(r => r && r.direction === d);
     return [d, rs.length, rs.reduce((s,r) => s+r.stars, 0)];
   }).sort((a,b) => b[2]-a[2]);
   const maxD = Math.max(...byDir.map(x => x[2]));
-  const sum = ALL.reduce((s,r) => s+r.stars, 0);
+  const loaded = loadedCount();
+  const sum = ALL.reduce((s,r) => s + (r ? r.stars : 0), 0);
   const tiers = [[0,100,'<100'],[100,1000,'100-1k'],[1000,5000,'1k-5k'],[5000,20000,'5k-20k'],[20000,1e9,'20k+']];
-  const tv = tiers.map(([a,b,l]) => [l, ALL.filter(r => r.stars>=a && r.stars<b).length]);
+  const tv = tiers.map(([a,b,l]) => [l, ALL.filter(r => r && r.stars>=a && r.stars<b).length]);
   const maxT = Math.max(...tv.map(x => x[1]));
   document.getElementById('secStats').innerHTML = `
-    <h2 class="st">📊 数据统计</h2><p class="sub">共 ${fnum(ALL.length)} 个仓库 · 生成于 ${DATA.generatedAt}</p>
+    <h2 class="st">📊 数据统计</h2><p class="sub">共 ${fnum(DATA.totalRepos || loaded)} 个仓库（已加载 ${fnum(loaded)}）· 生成于 ${DATA.generatedAt}</p>
     <div class="kpiCards">
-      <div class="kpiCard"><div class="k">仓库总数</div><div class="v">${fnum(ALL.length)}</div></div>
+      <div class="kpiCard"><div class="k">仓库总数</div><div class="v">${fnum(DATA.totalRepos || loaded)}</div></div>
       <div class="kpiCard"><div class="k">Star 合计</div><div class="v">${fmt(sum)}</div></div>
-      <div class="kpiCard"><div class="k">平均 Star</div><div class="v">${fmt(Math.round(sum/Math.max(1,ALL.length)))}</div></div>
+      <div class="kpiCard"><div class="k">平均 Star</div><div class="v">${fmt(Math.round(sum/Math.max(1,loaded)))}</div></div>
       <div class="kpiCard"><div class="k">方向数</div><div class="v">${DATA.dirNames.length}</div></div>
-      <div class="kpiCard"><div class="k">语言数</div><div class="v">${new Set(ALL.map(r=>r.language)).size}</div></div>
+      <div class="kpiCard"><div class="k">语言数</div><div class="v">${new Set(ALL.filter(Boolean).map(r=>r.language)).size}</div></div>
     </div>
     <div class="ins"><h3>各方向 Star 总量</h3>
       <div class="bars">${byDir.map(([d,n,s])=>`<div class="bar"><div class="lb">${esc(d)}</div>
@@ -1033,7 +1093,7 @@ function renderRecs(){
   };
 }
 function renderFav(){
-  const rows = ALL.filter(r => favs.has(hlKey(r)));
+  const rows = ALL.filter(r => r && favs.has(hlKey(r)));
   let h = `<h2 class="st">⭐ 我的收藏（${rows.length}）</h2><p class="sub">保存在浏览器本地，刷新不丢</p>`;
   if(!rows.length){
     h += `<div class="empty"><div class="big">⭐</div>还没有收藏，去仓库库点 ★ 吧</div>`;
@@ -1065,7 +1125,10 @@ let debounceT = null;
 document.getElementById('q').addEventListener('input', e => {
   const v = e.target.value;
   clearTimeout(debounceT);
-  debounceT = setTimeout(() => { state.q = v; state.page = 1; render(); pushHist(v); if(v.trim().length >= 2) ensureAllFull().then(() => render()); }, 140);
+  debounceT = setTimeout(() => {
+    state.q = v; state.page = 1; render(); pushHist(v);
+    if(loadedMeta.size < META_CHUNKS) toast(`完整索引加载中 ${loadedMeta.size}/${META_CHUNKS}，加载完会自动刷新结果`);
+  }, 140);
 });
 document.getElementById('starRange').addEventListener('input', e => {
   const v = +e.target.value;
@@ -1074,7 +1137,7 @@ document.getElementById('starRange').addEventListener('input', e => {
   state.page = 1; render();
 });
 document.getElementById('sinceSel').onchange = e => { state.since = e.target.value; state.page = 1; render(); };
-document.getElementById('sortSel').onchange = e => { state.sort = e.target.value; if(['forks-desc','created-desc'].includes(state.sort)) ensureAllFull().then(()=>render()); render(); };
+document.getElementById('sortSel').onchange = e => { state.sort = e.target.value; render(); };
 document.getElementById('viewSel').onchange = e => { state.view = e.target.value; render(); };
 document.getElementById('perSel').onchange = e => { state.per = +e.target.value; state.page = 1; render(); };
 document.getElementById('denseSel').onchange = e => { document.body.classList.toggle('dense', !!e.target.value); };
@@ -1175,7 +1238,7 @@ function setTab(t){
   document.querySelector('.resbar').style.display = t === 'lib' ? '' : 'none';
   if(t === 'fav') renderFav();
   if(t === 'recs') renderRecs();
-  if(t === 'stats') ensureAllFull().then(renderStats);
+  if(t === 'stats') renderStats();
   window.scrollTo({top:0});
   syncHash();
 }
@@ -1315,28 +1378,24 @@ function showHelp(){
 }
 
 /* ===== 启动 ===== */
+function bootUI(){
+  setTheme(localStorage.getItem('gh_theme') || 'light');
+  readHash();
+  if(state.q) document.getElementById('q').value = state.q;
+  if(state.view !== 'card') document.getElementById('viewSel').value = state.view;
+  if(state.sort !== 'stars-desc') document.getElementById('sortSel').value = state.sort;
+  renderTrend(); renderInsight(); renderStats(); renderFav(); renderHist();
+  const needConsent = !(CONSENT && CONSENT.base);
+  if(needConsent){ showNotice(); }
+  else { render(); setTab('lib'); }
+  const bar = document.getElementById('bootBar');
+  if(bar) bar.style.width = '100%';
+}
 function boot(){
-  const bar = document.getElementById('bootBar'), tip = document.getElementById('bootTip');
-  const total = ALL.length;
-  tip.textContent = `正在准备 ${fnum(total)} 个仓库…`;
-  bar.style.width = '35%';
-  setTimeout(() => {
-    setTheme(localStorage.getItem('gh_theme') || 'light');
-    readHash();
-    if(state.q) document.getElementById('q').value = state.q;
-    if(state.view !== 'card') document.getElementById('viewSel').value = state.view;
-    if(state.sort !== 'stars-desc') document.getElementById('sortSel').value = state.sort;
-    renderTrend(); renderInsight(); renderStats(); renderFav(); renderHist();
-    bar.style.width = '75%';
-    tip.textContent = '正在渲染…';
-    setTimeout(() => {
-      const needConsent = !(CONSENT && CONSENT.base);
-      if(needConsent){ showNotice(); }
-      else { render(); setTab('lib'); }
-      bar.style.width = '100%';
-      setTimeout(() => { document.getElementById('boot').classList.add('hide'); }, 220);
-    }, 30);
-  }, 30);
+  setTheme(localStorage.getItem('gh_theme') || 'light');
+  const tip = document.getElementById('bootTip');
+  if(tip) tip.textContent = '正在连接数据源…';
+  loadAllMeta();
 }
 boot();
 </script>

@@ -107,6 +107,8 @@ CHUNK = 15000
 meta = {
     "generatedAt": now.strftime("%Y-%m-%d %H:%M") + " UTC",
     "chunkSize": CHUNK,
+    "metaChunks": (len(repos) + CHUNK - 1) // CHUNK,
+    "totalRepos": len(repos),
     "dirNames": dir_order,
     "topLangs": top_langs,
     "trending": trending,
@@ -114,7 +116,7 @@ meta = {
     "highlights": highlights,
 }
 
-# ===== 拆分存储 v2：轻量索引首屏加载 + 完整分片按需加载 =====
+# ===== 渐进式加载：数据全部动态加载，首屏不被阻塞 =====
 meta_payload = (json.dumps(meta, ensure_ascii=False)
                 .replace("<", "\\u003c")
                 .replace("\u2028", "\\u2028")
@@ -122,29 +124,34 @@ meta_payload = (json.dumps(meta, ensure_ascii=False)
 
 chunks = [repos[i:i + CHUNK] for i in range(0, len(repos), CHUNK)] or [[]]
 
-# 轻量索引：[name, owner, stars, dirIdx, langIdx, desc60, updated] —— 首屏只载这个
 all_langs = sorted({r.get("language", "—") for r in repos})
 lang_idx = {l: i for i, l in enumerate(all_langs)}
 dir_idx = {d: i for i, d in enumerate(dir_order)}
-light = []
-for r in repos:
-    d = r.get("description") or ""
-    if len(d) > 60:
-        d = d[:57] + "..."
-    light.append([r["name"], r["owner"], r.get("stars", 0),
-                  dir_idx.get(r.get("direction"), 0),
-                  lang_idx.get(r.get("language", "—"), 0),
-                  d, (r.get("updatedAt") or "")[:10]])
-light_js = ("window.__LIGHT__={dirs:" + json.dumps(dir_order, ensure_ascii=False)
-            + ",langs:" + json.dumps(all_langs, ensure_ascii=False)
-            + ",repos:" + json.dumps(light, ensure_ascii=False).replace("<", "\\u003c")
-            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "};")
-os.makedirs(os.path.join(ROOT, "_site", "data"), exist_ok=True)
-with open(os.path.join(ROOT, "_site", "data", "meta.js"), "w", encoding="utf-8") as f:
-    f.write(light_js)
 
-# 完整分片：点开详情/深度搜索时才动态加载
 os.makedirs(os.path.join(ROOT, "_site", "data"), exist_ok=True)
+
+# ① 轻量索引分片：与 full 分片同 CHUNK → 全局索引对齐，支持任意片先到先用
+for ci, ch in enumerate(chunks):
+    lc = []
+    for r in ch:
+        d = r.get("description") or ""
+        if len(d) > 60:
+            d = d[:57] + "..."
+        lc.append([r["name"], r["owner"], r.get("stars", 0), r.get("forks", 0),
+                   dir_idx.get(r.get("direction"), 0),
+                   lang_idx.get(r.get("language", "—"), 0),
+                   d, (r.get("updatedAt") or "")[:10],
+                   (r.get("createdAt") or "")[:10], (r.get("matchedQuery") or "")[:20]])
+    body = ("window.__META_PARTS__=window.__META_PARTS__||[];window.__META_PARTS__.push({from:"
+            + str(ci * CHUNK)
+            + ",dirs:" + json.dumps(dir_order, ensure_ascii=False)
+            + ",langs:" + json.dumps(all_langs, ensure_ascii=False)
+            + ",repos:" + json.dumps(lc, ensure_ascii=False).replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "});")
+    with open(os.path.join(ROOT, "_site", "data", f"meta-{ci}.js"), "w", encoding="utf-8") as f:
+        f.write(body)
+
+# ② 完整分片：点开详情/深度搜索时才动态加载
 for i, ch in enumerate(chunks):
     body = ("window.__FULL__=window.__FULL__||[];window.__FULL__.push({from:" + str(i * CHUNK)
             + ",repos:" + json.dumps(ch, ensure_ascii=False).replace("<", "\\u003c")
@@ -152,11 +159,11 @@ for i, ch in enumerate(chunks):
     with open(os.path.join(ROOT, "_site", "data", f"full-{i}.js"), "w", encoding="utf-8") as f:
         f.write(body)
 
-scripts = ['<script src="data/meta.js"></script>']
+scripts = []  # 数据改为运行时动态加载，HTML 立即渲染
 html = (template
         .replace("<!--DATA_SCRIPTS-->", "\n".join(scripts))
         .replace("/*__META__*/ {}", meta_payload))
 
 with open(os.path.join(ROOT, "_site", "index.html"), "w", encoding="utf-8") as f:
     f.write(html)
-print(f"OK _site: index.html(轻量) + meta.js({len(light)} 条索引) + full/{len(chunks)} 个完整分片 | dirs={len(dir_order)}")
+print(f"OK _site: index.html + meta/{len(chunks)} 片(渐进) + full/{len(chunks)} 片(按需) | repos={len(repos)} dirs={len(dir_order)}")
